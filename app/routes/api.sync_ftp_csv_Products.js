@@ -74,6 +74,8 @@ async function processRow(row, shopData, counter) {
     const sku = row["PRODUCT_CODE"];
     const SwedenQty = row["SWEDEN"] ? Math.round(parseFloat(row["SWEDEN"].replace(",", "."))) : 0;
     const VaasaQty = parseInt(row["VAASA"], 10) || 0;
+    // console.log("SwedenQty", SwedenQty)
+    // console.log("VaasaQty", VaasaQty)
     counter.count++;
     const IS_LOG = counter.count % 1000 === 0
     const IS_LOG_2 = counter.count % 500 === 0
@@ -94,6 +96,9 @@ async function processRow(row, shopData, counter) {
                                     edges {
                                         node {
                                             id
+                                            quantities(names: ["available"]) {
+                                                quantity
+                                            }
                                             location {
                                                 id
                                                 name
@@ -126,6 +131,8 @@ async function processRow(row, shopData, counter) {
             const isVaasaLocationPresent = inventoryLevels.find(d => d.node.location.name === vaasaLoacationName)
             let activatedSwedenLocationId = isSwedenLocationPresent?.node?.location?.id || null;
             let activatedVaasaLocationId = isVaasaLocationPresent?.node?.location?.id || null;
+            const swedenShopifyQty = isSwedenLocationPresent?.node?.quantities?.[0]?.quantity ?? 0
+            const vaasaShopifyQty = isVaasaLocationPresent?.node?.quantities?.[0]?.quantity ?? 0
             let swedenLocationId;
             let vaasaLocationId;
             if (!activatedSwedenLocationId || !activatedVaasaLocationId) {
@@ -141,18 +148,19 @@ async function processRow(row, shopData, counter) {
                 `;
 
                 const locationsData = await graphqlRequest(shopData, getLocationsQuery);
-                swedenLocationId = locationsData?.data?.locations?.nodes.find(d => d.name === swedenLocationName)
+                swedenLocationId = locationsData?.data?.locations?.nodes.find(d => d.name === swedenLocationName)?.id
                 if (!swedenLocationId) {
                     console.log("sweden location id not found in the locations array")
                     return;
                 }
-                vaasaLocationId = locationsData?.data?.locations.nodes.find(d => d.name === vaasaLoacationName)
+                vaasaLocationId = locationsData?.data?.locations?.nodes.find(d => d.name === vaasaLoacationName)?.id
                 if (!vaasaLocationId) {
                     console.log("vaasa location id not found in the locations array")
                     return;
                 }
             }
-
+            // console.log("swedenLocationId", swedenLocationId)
+            // console.log("vaasaLocationId", vaasaLocationId)
             if (!isSwedenLocationPresent && swedenLocationId) {
                 activatedSwedenLocationId = await activateLocation(shopData, inventoryItemID, swedenLocationId)
                 if (!activatedSwedenLocationId) {
@@ -174,8 +182,8 @@ async function processRow(row, shopData, counter) {
                 return;
             }
 
-            const deltaSweden = SwedenQty - dataOfProductSKU.data.productVariants.nodes[0].inventoryQuantity;
-            const deltaVaasa = VaasaQty - dataOfProductSKU.data.productVariants.nodes[0].inventoryQuantity;
+            const deltaSweden = SwedenQty - swedenShopifyQty;
+            const deltaVaasa = VaasaQty - vaasaShopifyQty;
             if (IS_LOG) console.log("inventoryItemID=================>", inventoryItemID);
             if (IS_LOG) console.log("activatedSwedenLocationId=================>", activatedSwedenLocationId, "   activatedVaasaLocationId=================>", activatedVaasaLocationId);
             if (IS_LOG) console.log("deltaSweden===========> ", deltaSweden, "    deltaVaasa===============>", deltaVaasa);
