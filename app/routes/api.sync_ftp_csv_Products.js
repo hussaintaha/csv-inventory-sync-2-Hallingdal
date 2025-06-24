@@ -67,14 +67,18 @@ async function downloadCsvFromFtp() {
     }
 }
 
+// this (Fjernlager - Leveres innen 4-6 dager) location is for ==> SWEDEN
+// this (Fjernlager - Leveres innen 6-8 dager) location is for ==> VAASA
+
 async function processRow(row, shopData, counter) {
     const sku = row["PRODUCT_CODE"];
-    const qty = parseInt(row["TOTAL"], 10) || 0;
+    const SwedenQty = row["SWEDEN"] ? Math.round(parseFloat(row["SWEDEN"].replace(",", "."))) : 0;
+    const VaasaQty = parseInt(row["VAASA"], 10) || 0;
     counter.count++;
     const IS_LOG = counter.count % 1000 === 0
     const IS_LOG_2 = counter.count % 500 === 0
 
-    if (!sku || isNaN(qty)) return;
+    if (!sku || (isNaN(SwedenQty) && isNaN(VaasaQty))) return;
 
     try {
         const productSKUQuery = `
@@ -92,6 +96,7 @@ async function processRow(row, shopData, counter) {
                                             id
                                             location {
                                                 id
+                                                name
                                             }
                                         }
                                     }
@@ -112,60 +117,115 @@ async function processRow(row, shopData, counter) {
         if (IS_LOG_2) console.log("count from sync_ftp_csv_Products =============> ", counter.count);
 
         if (dataOfProductSKU.data.productVariants.nodes.length == 1) {
+            const swedenLocationName = "Fjernlager - Leveres innen 4-6 dager"
+            const vaasaLoacationName = "Fjernlager - Leveres innen 6-8 dager"
             const inventoryItemID = dataOfProductSKU.data.productVariants.nodes[0].inventoryItem.id;
             const inventoryLevels = dataOfProductSKU.data.productVariants.nodes[0].inventoryItem.inventoryLevels.edges;
-            if (!inventoryLevels.length) {
-                console.warn(`No inventoryLevels found for SKU: ${sku}`);
-                return;
-            }
-            const locationID = inventoryLevels[0].node.location.id;
-            const delta = qty - dataOfProductSKU.data.productVariants.nodes[0].inventoryQuantity;
-            if (IS_LOG) console.log("inventoryItemID=================>", inventoryItemID);
-            if (IS_LOG) console.log("locationID=================>", locationID);
-            if (IS_LOG) console.log("delta:", delta);
-            if (delta) {
-                if (IS_LOG) console.log("Delta is not zero, updating inventory of sku:", sku);
-            } else {
-                if (IS_LOG) console.log("Delta is zero, no need to update inventory of sku:", sku);
-            }
 
-            if (locationID) {
-
-                const inventoryAdjustmentMutation = `
-                    mutation inventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!) {
-                        inventoryAdjustQuantities(input: $input) {
-                            userErrors {
-                                field
-                                message
-                            }
-                            inventoryAdjustmentGroup {
-                                createdAt
-                                reason
-                                changes {
-                                    name
-                                    delta
-                                }
+            const isSwedenLocationPresent = inventoryLevels.find(d => d.node.location.name === swedenLocationName)
+            const isVaasaLocationPresent = inventoryLevels.find(d => d.node.location.name === vaasaLoacationName)
+            let activatedSwedenLocationId = isSwedenLocationPresent?.node?.location?.id || null;
+            let activatedVaasaLocationId = isVaasaLocationPresent?.node?.location?.id || null;
+            let swedenLocationId;
+            let vaasaLocationId;
+            if (!activatedSwedenLocationId || !activatedVaasaLocationId) {
+                const getLocationsQuery = `
+                    query MyQuery {
+                        locations(first: 250) {
+                            nodes {
+                                id
+                                name
                             }
                         }
                     }
                 `;
 
-                await graphqlRequest(shopData, inventoryAdjustmentMutation, {
-                    variables: {
-                        input: {
-                            reason: "correction",
-                            name: "available",
-                            changes: [
-                                {
-                                    delta,
-                                    inventoryItemId: inventoryItemID,
-                                    locationId: locationID
-                                }
-                            ]
+                const locationsData = await graphqlRequest(shopData, getLocationsQuery);
+                swedenLocationId = locationsData?.data?.locations?.nodes.find(d => d.name === swedenLocationName)
+                if (!swedenLocationId) {
+                    console.log("sweden location id not found in the locations array")
+                    return;
+                }
+                vaasaLocationId = locationsData?.data?.locations.nodes.find(d => d.name === vaasaLoacationName)
+                if (!vaasaLocationId) {
+                    console.log("vaasa location id not found in the locations array")
+                    return;
+                }
+            }
+
+            if (!isSwedenLocationPresent && swedenLocationId) {
+                activatedSwedenLocationId = await activateLocation(shopData, inventoryItemID, swedenLocationId)
+                if (!activatedSwedenLocationId) {
+                    console.log("sweden activated location id not found, Hence error while activating sweden location")
+                    return;
+                }
+            }
+
+            if (!isVaasaLocationPresent && vaasaLocationId) {
+                activatedVaasaLocationId = await activateLocation(shopData, inventoryItemID, vaasaLocationId)
+                if (!activatedVaasaLocationId) {
+                    console.log("vaasa activated location id not found, Hence error while activating vaasa location")
+                    return;
+                }
+            }
+
+            if (!activatedSwedenLocationId || !activatedVaasaLocationId) {
+                console.log("activated sweden or vaasa location id not found")
+                return;
+            }
+
+            const deltaSweden = SwedenQty - dataOfProductSKU.data.productVariants.nodes[0].inventoryQuantity;
+            const deltaVaasa = VaasaQty - dataOfProductSKU.data.productVariants.nodes[0].inventoryQuantity;
+            if (IS_LOG) console.log("inventoryItemID=================>", inventoryItemID);
+            if (IS_LOG) console.log("activatedSwedenLocationId=================>", activatedSwedenLocationId, "   activatedVaasaLocationId=================>", activatedVaasaLocationId);
+            if (IS_LOG) console.log("deltaSweden===========> ", deltaSweden, "    deltaVaasa===============>", deltaVaasa);
+
+            if (deltaSweden === 0 && deltaVaasa === 0) {
+                if (IS_LOG) console.log("Both deltas are zero. sskipping inventory update for SKU:", sku);
+                return;
+            } else {
+                if (IS_LOG) console.log("One of the deta is not zero. updating inventory for SKU:", sku);
+            }
+
+            const inventoryAdjustmentMutation = `
+                mutation inventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!) {
+                    inventoryAdjustQuantities(input: $input) {
+                        userErrors {
+                            field
+                            message
+                        }
+                        inventoryAdjustmentGroup {
+                            createdAt
+                            reason
+                            changes {
+                                name
+                                delta
+                            }
                         }
                     }
-                });
-            }
+                }
+            `;
+
+            await graphqlRequest(shopData, inventoryAdjustmentMutation, {
+                variables: {
+                    input: {
+                        reason: "correction",
+                        name: "available",
+                        changes: [
+                            {
+                                delta: deltaSweden,
+                                inventoryItemId: inventoryItemID,
+                                locationId: activatedSwedenLocationId
+                            },
+                            {
+                                delta: deltaVaasa,
+                                inventoryItemId: inventoryItemID,
+                                locationId: activatedVaasaLocationId
+                            }
+                        ]
+                    }
+                }
+            });
         } else if (dataOfProductSKU.data.productVariants.nodes.length > 1) {
             if (IS_LOG) console.log("Multiple variants found hence not updating quantity for SKU:", sku);
         } else {
@@ -221,15 +281,57 @@ export const loader = async () => {
     } catch (error) {
         console.error("Loader error from sync_ftp_csv_Products:", error);
         return new Response(
-            JSON.stringify({ error: error, message: "Loader error from sync_ftp_csv_Products"  }),
+            JSON.stringify({ error: error, message: "Loader error from sync_ftp_csv_Products" }),
             { status: 500, headers: { 'Content-Type': 'application/json' } }
         );
     }
 };
 
+const activateLocation = async (shopData, inventoryItemID, locationId) => {
+    const activateLocationMutation = `
+        mutation ActivateInventoryItem($inventoryItemId: ID!, $locationId: ID!) {
+            inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
+                inventoryLevel {
+                    id
+                    quantities(names: ["available"]) {
+                        name
+                        quantity
+                    }
+                    item {
+                        id
+                    }
+                    location {
+                        id
+                    }
+                }
+                userErrors {
+                    message
+                    field
+                }
+            }
+        }
+    `;
 
+    const data = await graphqlRequest(shopData, activateLocationMutation, {
+        variables: {
+            inventoryItemId: inventoryItemID,
+            locationId: locationId
+        }
+    });
 
+    const inventoryActivate = data?.data?.inventoryActivate;
 
+    if (!inventoryActivate?.inventoryLevel?.location?.id) {
+        return null;
+    }
+
+    if (inventoryActivate.userErrors?.length > 0) {
+        console.log("Error while activating location:", inventoryActivate.userErrors);
+        return null;
+    }
+
+    return inventoryActivate.inventoryLevel.location.id;
+}
 
 
 

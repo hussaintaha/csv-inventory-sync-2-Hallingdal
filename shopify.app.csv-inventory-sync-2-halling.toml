@@ -1,23 +1,29 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "6ecf89848715184ffdec0defd805b7cf"
-application_url = "https://example.com/"
+client_id = "84713d199b4721100d8094b91041bff8"
+application_url = "https://mouse-pierce-included-petite.trycloudflare.com"
 embedded = true
-name = "CSV Inventory Sync 2 Halling"
-handle = "csv-inventory-sync-2-halling"
+name = "CSV Inventory Sync 2 (Halling)"
+handle = "csv-inventory-sync-2-halling-1"
 
 [build]
 include_config_on_deploy = true
+dev_store_url = "nextgen-teststore.myshopify.com"
+automatically_update_urls_on_dev = true
 
 [webhooks]
 api_version = "2025-04"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_inventory,write_inventory,write_products"
+scopes = "write_products"
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [
+  "https://mouse-pierce-included-petite.trycloudflare.com/auth/callback",
+  "https://mouse-pierce-included-petite.trycloudflare.com/auth/shopify/callback",
+  "https://mouse-pierce-included-petite.trycloudflare.com/api/auth/callback"
+]
 
 [pos]
 embedded = false
